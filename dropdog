@@ -11,8 +11,8 @@ $SELF_DIR  = File.expand_path(File.dirname(__FILE__))
 $SELF      = File.expand_path(__FILE__)
 $INOTIFY   = 'inotifywait'
 
-$WAIT = { :inotify_fail => 10, :before_cmd => 5, :cmd_timeout => 10 }
-#$WAIT = { :inotify_fail => 1, :before_cmd => 1, :cmd_timeout => 1 }
+$WAIT = { :inotify_fail => 10, :before_cmd => 5, :cmd_timeout => 10, :pause => 30}
+#$WAIT = { :inotify_fail => 1, :before_cmd => 1, :cmd_timeout => 1, :pause => 30 }
 
 def error(msg)
   STDERR.puts(msg)
@@ -129,7 +129,14 @@ def get_hashlist(dir, config)
   return list
 end
 
-
+def check_pause
+  flag = false
+  while FileTest.exists?($DROPDOG + "pause") or FileTest.exists?($DROPDOG + "PAUSE")
+    flag = true
+    sleep $WAIT[:pause]
+  end
+  return flag
+end
 
 def watch(dir, config)
   fail_count = 0
@@ -149,16 +156,21 @@ def watch(dir, config)
       sleep $WAIT[:inotify_fail]
       next
     end
+    check_pause()
+
     fail_count = 0
     this = output[0]
     type = output[1]
     file = output[2]
+
     if type == "DELETE_SELF" or type == "MOVE_SELF"
       STDERR.puts("[warning] INOFITY found #{type}.\n")
       sleep $WAIT[:inotify_fail]
       next
     end
+
     sleep $WAIT[:before_cmd]
+
     new_hash = get_hashlist(dir, config)
     config.each do |c|
       if hash[c[:file]] != new_hash[c[:file]]
