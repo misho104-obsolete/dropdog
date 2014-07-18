@@ -87,16 +87,20 @@ def execute_cmd(dir, file, cmd)
     error_msg = nil
     output = ""
     mother_thread = Thread.new do
-      Dir.chdir(dir) do
-        IO.popen(line, :cwd => dir) do |io|
-          child_pid = io.pid
-          while out= io.gets
-            output << out
+      begin
+        Dir.chdir(dir) do
+          IO.popen(line, :cwd => dir) do |io|
+            child_pid = io.pid
+            while out= io.gets
+              output << out
+            end
           end
         end
-      end
-      if $? != 0
-        error_msg = "Command execution failed with status #{$?}.\n---\n#{line}---\n#{output}\n"
+        if $? != 0
+          error_msg = "Command execution failed with status #{$?}.\n---\n#{line}---\n#{output}\n"
+        end
+      rescue Exception => e
+        error_msg = "Command execution failed with status #{$?}.\n---\n#{line}---\n#{e}"
       end
     end
     begin
