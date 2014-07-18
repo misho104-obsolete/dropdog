@@ -135,7 +135,7 @@ end
 
 def check_pause
   flag = false
-  while FileTest.exists?($DROPDOG + "pause") or FileTest.exists?($DROPDOG + "PAUSE")
+  while FileTest.file?($DROPDOG + "pause") or FileTest.file?($DROPDOG + "PAUSE")
     flag = true
     sleep $WAIT[:pause]
   end
