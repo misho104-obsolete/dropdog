@@ -207,10 +207,10 @@ check_inotify()
 $DROPBOX   = Pathname(guess_dropbox(ARGV[0] || nil))
 $DROPDOG   = $DROPBOX + ".dropdog"
 
-while true
-  @dog_conf  = get_configure()
-  error(@dog_conf) if @dog_conf.class == String
+@dog_conf  = get_configure()
+error(@dog_conf) if @dog_conf.class == String
 
+while true
   watch_dirs = @dog_conf[:targets].map{|t| t[:dir]}.uniq
   threads = []
   watch_dirs.each do |dir|
@@ -233,6 +233,21 @@ while true
 
   if check_reload()
     clear_reload()
+    while true
+      @dog_conf  = get_configure()
+      if @dog_conf.class == String
+        open($DROPDOG + "reload.log", "w") {|f| f.write <<_EOF_ }
+error: #{@dog_conf}
+
+Dropdog paused.
+Please correct the configure file.
+The file will be checked again in 300 sec.
+_EOF_
+        next
+      end
+      open($DROPDOG + "reload.log", "w") {|f| f.write "success\n\n#{@dog_conf}" }
+      break
+    end
     next
   end
   puts "Finished."
