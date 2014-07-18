@@ -1,0 +1,191 @@
+#!/usr/bin/env ruby
+
+require 'yaml'
+require 'csv'
+require 'pathname'
+require 'digest'
+require 'timeout'
+output = ""
+
+$SELF_DIR  = File.expand_path(File.dirname(__FILE__))
+$SELF      = File.expand_path(__FILE__)
+$INOTIFY   = 'inotifywait'
+
+$WAIT = { :inotify_fail => 10, :before_cmd => 5, :cmd_timeout => 10 }
+#$WAIT = { :inotify_fail => 1, :before_cmd => 1, :cmd_timeout => 1 }
+
+def error(msg)
+  STDERR.puts(msg)
+  STDERR.puts("\n")
+  exit(1)
+end
+
+def usage
+  error("Usage: #{__FILE__} (dropbox_dir)")
+end
+
+def check_inotify
+  unless system("which #{$INOTIFY} >/dev/null 2>/dev/null")
+    error("inotifywait not found. install inotify-tools (apt-get install inotify-tools).")
+  end
+end
+
+def guess_dropbox(candidate = nil)
+  if candidate
+    candidates = [candidate]
+  else
+    candidates = ["#{ENV["HOME"]}/Dropbox",
+                  "#{ENV["HOME"]}/dropbox",
+                  "#{ENV["HOME"]}/Documents/Dropbox",
+                  "#{ENV["HOME"]}/Documents/dropbox",]
+  end
+  candidates.each do |c|
+    if FileTest.directory?(c)
+      puts("Directory found: #{c}\n")
+      return c
+    end
+  end
+  usage()
+end
+
+def get_configure(dir)
+  conf_file = "#{dir}/.dropdog/config.yml"
+  unless FileTest.file?(conf_file)
+    return "Configuration file #{conf_file} not found."
+  end
+  begin
+    config = YAML.load_file(conf_file)
+  rescue Exception => e
+    return "Invalid YAML syntax in configuration file;\n#{e}."
+  end
+
+  # check on config
+  if not(config and config.respond_to?(:size) and config.respond_to?(:keys))
+    return "Invalid configuration."
+  elsif not (config.keys - [:targets]).size() == 0
+    return "Unsupported option (#{config.keys - [:targets]})."
+  end
+
+  # check on :targets
+  if not (config[:targets].respond_to?(:length) and config[:targets].size() > 0)
+    return ":target not configured."
+  end
+  config[:targets].each do |t|
+    if not(t.keys.size == 3 and (t.keys - [:dir, :file, :command]).size == 0)
+      return ":targets can have :dir, :file, :command."
+    elsif not(FileTest.directory?(Pathname(dir)+t[:dir]))
+      return "Invalid directory specified: #{t[:dir]}"
+    end
+  end
+  return config
+end
+
+def execute_cmd(dir, file, cmd)
+  cmd.each_line do |line|
+    print "exec: #{line}\n"
+    child_pid = nil
+    error_msg = nil
+    output = ""
+    mother_thread = Thread.new do
+      Dir.chdir(dir) do
+        IO.popen(line, :cwd => dir) do |io|
+          child_pid = io.pid
+          while out= io.gets
+            output << out
+          end
+        end
+      end
+      if $? != 0
+        error_msg = "Command execution failed with status #{$?}.\n---\n#{line}---\n#{output}\n"
+      end
+    end
+    begin
+      timeout($WAIT[:cmd_timeout]) { mother_thread.join }
+    rescue Timeout::Error
+      Process.detach(child_pid)
+      Process.kill(:INT, child_pid)
+      Thread.kill(mother_thread)
+      error_msg = "Command execution timeout.\n---\n#{line}---\n#{output}---\n"
+    end
+    if error_msg
+      print error_msg
+      logname = "dropdog_#{file.gsub(".","_")}.log"
+      open(Pathname(dir) + logname, "w") {|f| f.write error_msg}
+      return
+    end
+  end
+end
+
+def get_hash(dir, file)
+  f = Pathname(dir) + file
+  return FileTest.file?(f) ? Digest::MD5.file(f).hexdigest : nil
+end
+
+def get_hashlist(dir, config)
+  list = {}
+  config.each do |c|
+    list[c[:file]] = get_hash(dir, c[:file])
+  end
+  return list
+end
+
+
+
+def watch(dir, config)
+  fail_count = 0
+  hash = get_hashlist(dir, config)
+  while -1
+    if not FileTest.directory?(dir)
+      STDERR.puts("[warning] #{dir} deleted.")
+      return
+    end
+    inotify_out = `#{$INOTIFY} --csv -e modify,close_write,move,create,delete,move_self,delete_self #{dir}`
+    output = CSV.parse(inotify_out)[0]
+    if $? != 0 or output.size != 3
+      fail_count += 1
+      STDERR.puts("[warning] INOFITY for #{dir} unexpectedly terminated: #{$?}\n")
+      return if fail_count >= 5
+      sleep $WAIT[:inotify_fail]
+      next
+    end
+    fail_count = 0
+    this = output[0]
+    type = output[1]
+    file = output[2]
+    if type == "DELETE_SELF" or type == "MOVE_SELF"
+      STDERR.puts("[warning] INOFITY found #{type}.\n")
+      sleep $WAIT[:inotify_fail]
+      next
+    end
+    sleep $WAIT[:before_cmd]
+    new_hash = get_hashlist(dir, config)
+    config.each do |c|
+      if hash[c[:file]] != new_hash[c[:file]]
+        command = c[:command].gsub("$F", c[:file])
+        execute_cmd(dir, c[:file], command)
+        hash[c[:file]] = get_hash(dir, c[:file])
+      end
+    end
+  end
+end
+
+
+$SELF_DIR  = File.expand_path(File.dirname(__FILE__))
+$SELF      = File.expand_path(__FILE__)
+@dropbox   = guess_dropbox(ARGV[0] || nil)
+@dog_conf  = get_configure(@dropbox)
+check_inotify()
+
+if @dog_conf.class == String
+  error(@dog_conf)
+end
+
+watch_dirs = @dog_conf[:targets].map{|t| t[:dir]}.uniq
+watch_dirs.each do |dir|
+  Process.fork do
+    print "WatchDog for #{dir}\n"
+    watch(Pathname(@dropbox)+dir, @dog_conf[:targets].select{|t| t[:dir] == dir})
+  end
+end
+Process.waitall
+puts "Finished."
