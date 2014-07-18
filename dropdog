@@ -142,6 +142,15 @@ def check_pause
   return flag
 end
 
+def check_reload
+  return (FileTest.file?($DROPDOG + "reload") or FileTest.file?($DROPDOG +"RELOAD"))
+end
+
+def clear_reload
+  [$DROPDOG + "reload", $DROPDOG + "RELOAD"].each { |f| File.unlink f if FileTest.file? f}
+end
+
+
 def watch(dir, config)
   fail_count = 0
   hash = get_hashlist(dir, config)
@@ -159,6 +168,7 @@ def watch(dir, config)
       end
       Thread.current[:inotify_pid] = nil
     end
+    return if check_reload()
     output = CSV.parse(inotify_out)[0]
     if $? != 0 or output.size != 3
       fail_count += 1
@@ -197,16 +207,34 @@ check_inotify()
 $DROPBOX   = Pathname(guess_dropbox(ARGV[0] || nil))
 $DROPDOG   = $DROPBOX + ".dropdog"
 
-@dog_conf  = get_configure()
-error(@dog_conf) if @dog_conf.class == String
+while true
+  @dog_conf  = get_configure()
+  error(@dog_conf) if @dog_conf.class == String
 
-watch_dirs = @dog_conf[:targets].map{|t| t[:dir]}.uniq
-watch_dirs.each do |dir|
-  Process.fork do
-    print "WatchDog for #{dir}\n"
-    watch($DROPBOX + dir, @dog_conf[:targets].select{|t| t[:dir] == dir})
+  watch_dirs = @dog_conf[:targets].map{|t| t[:dir]}.uniq
+  threads = []
+  watch_dirs.each do |dir|
+    th = Thread.fork do
+      print "WatchDog for #{dir}\n"
+      watch($DROPBOX + dir, @dog_conf[:targets].select{|t| t[:dir] == dir})
+      if check_reload
+        print "RELOAD! Kill threads...\n"
+        threads.each { |th|
+          if th[:inotify_pid]
+            Process.detach(th[:inotify_pid])
+            Process.kill(:INT, th[:inotify_pid])
+          end
+        }
+      end
+    end
+    threads.push(th)
   end
-end
-Process.waitall
+  threads.each {|th| th.join}
 
-puts "Finished."
+  if check_reload()
+    clear_reload()
+    next
+  end
+  puts "Finished."
+  break
+end
