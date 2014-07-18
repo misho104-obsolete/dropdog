@@ -151,7 +151,17 @@ def watch(dir, config)
       return
     end
 
-    inotify_out = `#{$INOTIFY} --csv -e modify,close_write,move,create,delete,move_self,delete_self #{dir}`
+    inotify_pid = 0
+    inotify_out = ""
+    inotify_thread = Thread.new do
+      IO.popen("#{$INOTIFY} --csv -e modify,close_write,move,create,delete,move_self,delete_self #{dir}") do |io|
+        inotify_pid = io.pid
+        while out = io.gets
+          inotify_out << out
+        end
+      end
+    end
+    inotify_thread.join
     output = CSV.parse(inotify_out)[0]
     if $? != 0 or output.size != 3
       fail_count += 1
